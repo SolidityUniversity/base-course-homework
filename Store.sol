@@ -4,12 +4,10 @@ pragma solidity ^0.8.28;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 contract Store is Ownable {
-
     /// @notice buyer => product_id => quantity
     mapping(address => mapping(uint256 => uint256)) public userPurchase;
     /// @notice product_id => quantity
     mapping(uint256 => uint256) public productsPurchase;
-
     struct Product {
         string name;
         uint256 id;
@@ -17,7 +15,17 @@ contract Store is Ownable {
         uint256 price;
     }
 
+    /// @notice history of purchases
+    struct PurchaseHistory {
+        address buyer;
+        uint256 purchaseId;
+        uint256 totalAmount;
+    }
+    PurchaseHistory[] public purchasesForCurrentBuyer;
+
     Product[] private products;
+    PurchaseHistory[] public purchases;
+    uint256 internal purchaseId;
 
     event Purchase(address buyer, uint256 id, uint256 quantity);
 
@@ -29,58 +37,66 @@ contract Store is Ownable {
 
     constructor() Ownable(msg.sender) {}
 
-    function buy(uint256 _id, uint256 _quantity) payable external {
-        require(_quantity>0, QuantityCantBeZero());
+    function buy(uint256 _id, uint256 _quantity) external payable {
+        require(_quantity > 0, QuantityCantBeZero());
         require(getStock(_id) >= _quantity, OutOfStock());
 
-        uint256 totalPrice = getPrice(_id)*_quantity;
+        uint256 totalPrice = getPrice(_id) * _quantity;
         require(msg.value >= totalPrice, NotEnoughtFunds());
 
         //buy
-        _buyProcess(msg.sender,_id,_quantity);
-        
-        if(msg.value > totalPrice) {
+        _buyProcess(msg.sender, _id, _quantity);
+
+        if (msg.value > totalPrice) {
             payable(msg.sender).transfer(msg.value - totalPrice);
         }
     }
 
-    function batchBuy(uint256[] calldata _ids, uint256[] calldata _quantitys) payable external {
+    function batchBuy(uint256[] calldata _ids, uint256[] calldata _quantitys)
+        external
+        payable
+    {
         require(_ids.length == _quantitys.length, "arrays lenghts mismatch");
 
         uint256 totalPrice = 0;
 
-        for(uint i = 0; i < _ids.length; i++) {
+        for (uint256 i = 0; i < _ids.length; i++) {
             uint256 q = _quantitys[i];
             uint256 id = _ids[i];
 
-            require(q>0, QuantityCantBeZero());
+            require(q > 0, QuantityCantBeZero());
             require(getStock(id) >= q, OutOfStock());
 
-            totalPrice += getPrice(id)*q;
+            totalPrice += getPrice(id) * q;
         }
 
         require(msg.value >= totalPrice, NotEnoughtFunds());
 
-        for(uint i = 0; i < _ids.length; i++) {
+        for (uint256 i = 0; i < _ids.length; i++) {
             uint256 q = _quantitys[i];
             uint256 id = _ids[i];
 
-            _buyProcess(msg.sender,id,q);
+            _buyProcess(msg.sender, id, q);
         }
 
-        if(msg.value > totalPrice) {
+        if (msg.value > totalPrice) {
             payable(msg.sender).transfer(msg.value - totalPrice);
         }
     }
 
-    function _buyProcess(address buyer, uint256 _id, uint256 _quantity) internal {
+    function _buyProcess(
+        address buyer,
+        uint256 _id,
+        uint256 _quantity
+    ) internal {
         Product storage product = findProduct(_id);
         product.stock -= _quantity;
 
         userPurchase[buyer][_id] += _quantity;
         productsPurchase[_id] += _quantity;
 
-        emit Purchase(buyer,_id,_quantity);
+        setPurchaseHistory(buyer, product.price * _quantity);
+        emit Purchase(buyer, _id, _quantity);
     }
 
     function withdraw() external onlyOwner {
@@ -90,16 +106,21 @@ contract Store is Ownable {
         payable(owner()).transfer(balance);
     }
 
-    function addProduct(string calldata _name, uint256 _id, uint256 _stock, uint256 _price) external onlyOwner {
+    function addProduct(
+        string calldata _name,
+        uint256 _id,
+        uint256 _stock,
+        uint256 _price
+    ) external onlyOwner {
         require(!isIdExist(_id), IdAlreadyExist());
-        products.push(Product(_name,_id,_stock,_price));
+        products.push(Product(_name, _id, _stock, _price));
     }
 
     function deleteProduct(uint256 _id) external onlyOwner {
         (bool status, uint256 index) = findIndexById(_id);
-        require(status,IdDoesNotExist());
+        require(status, IdDoesNotExist());
 
-        products[index] = products[products.length-1];
+        products[index] = products[products.length - 1];
         products.pop();
     }
 
@@ -113,23 +134,26 @@ contract Store is Ownable {
         product.stock = _stock;
     }
 
-    function getProducts() public view returns(Product[] memory) {
+    function getProducts() public view returns (Product[] memory) {
         return products;
     }
 
-    function getPrice(uint256 _id) public view returns(uint256) {
+    function getPrice(uint256 _id) public view returns (uint256) {
         Product storage product = findProduct(_id);
         return product.price;
     }
 
-    function getStock(uint256 _id) public view returns(uint256) {
+    function getStock(uint256 _id) public view returns (uint256) {
         Product storage product = findProduct(_id);
         return product.stock;
     }
 
-
-    function findProduct(uint256 _id) internal view returns(Product storage product) {
-        for(uint i = 0; i < products.length; i++) {
+    function findProduct(uint256 _id)
+        internal
+        view
+        returns (Product storage product)
+    {
+        for (uint256 i = 0; i < products.length; i++) {
             if (products[i].id == _id) {
                 return products[i];
             }
@@ -137,32 +161,55 @@ contract Store is Ownable {
         revert IdDoesNotExist();
     }
 
-    function isIdExist(uint256 _id) internal view returns(bool) {
-        for(uint i = 0; i < products.length; i++) {
-            if(products[i].id == _id) {
+    function isIdExist(uint256 _id) internal view returns (bool) {
+        for (uint256 i = 0; i < products.length; i++) {
+            if (products[i].id == _id) {
                 return true;
             }
         }
         return false;
     }
 
-    function findIndexById(uint256 _id) internal view returns(bool, uint256) {
-        for(uint i = 0; i < products.length; i++) {
-            if(products[i].id == _id) {
+    function findIndexById(uint256 _id) internal view returns (bool, uint256) {
+        for (uint256 i = 0; i < products.length; i++) {
+            if (products[i].id == _id) {
                 return (true, i);
             }
         }
         return (false, 0);
     }
 
-    //HOMEWORK
-    // Add refund() function
-    // Add topSellingProducts() function
-    // Add getTotalRevenue() function
+    /// HomeTask
 
-    // Add getUserPurchase(address) function
+    ///@notice Set history of purchases of current buyer
+    /// @param buyer Buyer
+    /// @param _totalAmout Sum, which buyer spend for purchase
+    function setPurchaseHistory(address buyer, uint256 _totalAmout) internal {
+        purchaseId++;
+        purchases.push(PurchaseHistory(buyer, purchaseId, _totalAmout));
+    }
 
-    // Add DISCOUNT_CODES functionality
+    /// @notice Refund money for last purchase for buyer
+    /// @param _buyer Buyer
+    // function refund(address _buyer) public payable {
+    //     // надо отфлильтровать список транзакций и выбрать транзацию среди них с самым большим id
+    //     PurchaseHistory memory lastPurchase = getLastPurchase(_buyer);
+    // }
 
-    // Add Struct Purchase (if you want to)
+
+    /// @notice Get last purchase of buyer
+    /// address buyer Buyer
+    /// @return Purchase with max purchaseId among purchases of buyer
+    function getLastPurchase(address _buyer)
+        public
+        returns (PurchaseHistory memory)
+    {
+        for (uint256 i = 0; i < purchases.length; i++) {
+            if (purchases[i].buyer == _buyer) {
+                purchasesForCurrentBuyer.push(purchases[i]);
+            }
+        }
+
+        return purchasesForCurrentBuyer[purchasesForCurrentBuyer.length - 1];
+    }
 }
